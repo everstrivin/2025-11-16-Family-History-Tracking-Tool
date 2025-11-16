@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Genealogy Alignment Tool (MVP v2)</title>
+  <style>
+    :root {
+      --bg: #f6f7fb; --panel: #ffffff; --ink: #121212; --muted:#6b7280; --accent:#2563eb;
+      --pink:#ffd1e6; --blue:#cfe6ff; --unknown:#e5e7eb; --lds:#d9f99d; --bar:#94a3b8;
+      --border:#e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      color: var(--ink); background: var(--bg);
+      overflow: hidden;
+    }
+    .app { display: grid; grid-template-columns: 320px 1fr 360px; grid-template-rows: 1fr 140px; height: 100vh; gap: 8px; padding: 8px; }
+    .panel { background: var(--panel); border:1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.04); overflow: hidden; }
+    .header { padding: 10px 12px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:8px; }
+    h2 { font-size: 14px; margin:0; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+
+    /* Left: Todo */
+    #todo { display: flex; flex-direction: column; }
+    #todo .tools { display:flex; gap:6px; align-items:center; }
+    #todoList, #stuckList { overflow: auto; height: calc(100% - 90px); padding: 8px 8px 16px; }
+    .todo-item { border:1px solid var(--border); border-radius: 10px; padding: 8px; margin-bottom:8px; display:flex; gap:8px; align-items:start; }
+    .todo-item .controls { margin-left:auto; display:flex; gap:4px; }
+    button, .btn { background: var(--panel); color: var(--ink); border:1px solid var(--border); padding:6px 8px; border-radius:8px; cursor:pointer; font-size:12px; }
+    button:hover { border-color: var(--muted); }
+    .pill { font-size: 10px; padding:2px 6px; border-radius: 999px; border:1px solid var(--border); background:#fafafa; color: var(--muted); }
+    .tabber { display:flex; gap:6px; padding:6px; }
+    .tabber button.active { background: var(--accent); color: white; border-color: transparent; }
+
+    /* Center: Tree */
+    #treePanel { position: relative; }
+    #treeHeader { display:flex; gap:8px; align-items:center; }
+    #treeCanvas { width: 100%; height: calc(100% - 44px); background: #ffffff; }
+    #search { flex:1; padding:6px 8px; border:1px solid var(--border); border-radius:8px; }
+
+    /* Node styling */
+    .node { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto; }
+    .node rect { stroke: #9ca3af; fill: #fff; }
+    .node .ldsBand { fill: var(--lds); }
+    .node .male { fill: var(--blue); }
+    .node .female { fill: var(--pink); }
+    .node .unknown { fill: var(--unknown); }
+    .node .label { font-weight: 700; }
+    .node .years { font-weight:700; font-size: 10px; fill:#111; }
+
+    /* Modal */
+    .modal { position: fixed; inset: 0; display: none; align-items:center; justify-content:center; background: rgba(0,0,0,.3); }
+    .modal.open { display:flex; }
+    .modal .card { width: min(900px, 96vw); max-height: 90vh; overflow:auto; background:var(--panel); border-radius: 12px; padding: 12px; border:1px solid var(--border); }
+    .grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .field { display:flex; gap:6px; align-items:center; }
+    .field label { width: 180px; font-size: 12px; color: var(--muted); }
+    .field input, .field select { flex:1; padding:6px 8px; border:1px solid var(--border); border-radius: 8px; }
+    .progress { height: 8px; background:#eef2ff; border-radius: 999px; overflow:hidden; }
+    .progress > div { height:100%; background: var(--accent); width:0%; }
+
+    /* Bottom: Kanban */
+    #kanban { overflow:auto; }
+    #kanban .lane { min-width: 200px; border-right:1px solid var(--border); padding:8px; max-height: calc(100% - 42px); overflow-y: auto; }
+    #kanban .scroller { display:flex; height: calc(100% - 42px); }
+    .card-mini { border:1px solid var(--border); border-radius: 8px; padding:6px; margin-bottom:6px; font-size: 12px; }
+
+    /* Right: Progress Track */
+    #progressTrack { padding-bottom: 8px; display:flex; flex-direction: column; }
+    #progressTrack .metric { padding: 8px 12px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- Left: Todo -->
+    <section id="todo" class="panel">
+      <div class="header">
+        <h2>To‑Do</h2>
+      </div>
+      <div class="tabber">
+        <button id="tabActive" class="active">Active</button>
+        <button id="tabStuck">Stuck</button>
+        <span class="pill" id="todoCount">0</span>
+      </div>
+      <div class="header tools">
+        <button id="btnElevate">Elevate Priority</button>
+        <button id="btnDeprioritize">Deprioritize</button>
+        <button id="btnMarkStuck">Mark Stuck</button>
+        <button id="btnUnstuck">Unstuck</button>
+      </div>
+      <div id="todoList"></div>
+      <div id="stuckList" class="hidden"></div>
+    </section>
+
+    <!-- Center: Tree -->
+    <section id="treePanel" class="panel">
+      <div class="header" id="treeHeader">
+        <h2 style="margin-right:8px;">Tree</h2>
+        <input id="search" placeholder="Find individual by name… (Enter)" />
+        <button id="btnAdd">Add Person</button>
+        <button id="btnImport">Import (GEDCOM/JSON)</button>
+        <button id="btnExportJson">Export JSON</button>
+        <button id="btnExportGedcom">Export GEDCOM</button>
+      </div>
+      <svg id="treeCanvas"></svg>
+    </section>
+
+    <!-- Right: Progress Track -->
+    <aside id="progressTrack" class="panel">
+      <div class="header"><h2>Progress</h2></div>
+      <div class="metric"><span>All work completed</span><strong id="mComplete">0</strong></div>
+      <div class="metric"><span>Not begun</span><strong id="mNotBegun">0</strong></div>
+      <div class="metric"><span>In progress</span><strong id="mInProgress">0</strong></div>
+      <div class="metric"><span>Total individuals</span><strong id="mTotal">0</strong></div>
+    </aside>
+
+    <!-- Bottom: Kanban -->
+    <section id="kanban" class="panel" style="grid-column: 1 / span 3;">
+      <div class="header"><h2>Kanban — Next Needed Field</h2></div>
+      <div class="scroller" id="kanbanScroller"></div>
+    </section>
+  </div>
+
+  <!-- Person Modal -->
+  <div class="modal" id="personModal">
+    <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <h3 id="pmTitle" style="margin:0;">Edit Person</h3>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <div class="progress" style="width:200px"><div id="pmProgress"></div></div>
+          <button id="pmClose">Close</button>
+        </div>
+      </div>
+      <div class="grid-2" id="pmGrid" style="margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <!-- Sources Modal -->
+  <div class="modal" id="sourcesModal">
+    <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <h3 id="smTitle" style="margin:0;">Sources</h3>
+        <button id="smClose">Close</button>
+      </div>
+      <div id="sourcesList" style="margin-top:8px;"></div>
+      <div style="display:flex; gap:6px; margin-top:8px;">
+        <input id="srcTitle" placeholder="Title" />
+        <input id="srcUrl" placeholder="URL" />
+        <input id="srcCitation" placeholder="Citation" />
+        <button id="srcAdd">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <input id="filePicker" type="file" accept=".ged,.gedcom,.json" style="display:none;" />
+
+  <script>
+  /*************** Constants ***************/
+  const FIELD_ORDER = [
+    "Name","Mother","Mother Source","Father","Father Source","Spouse Name",
+    "Marriage Date","Marriage Place","Marriage Source","Birth Date","Birth Place","Birth Source",
+    "Gender","Gender Source","Christening Date","Christening Place","Christening Source",
+    "Death Date","Death Place","Death Source","Burial Date","Burial Place","Burial Source",
+    "Ancestry Link","FamilySearch Link",
+    "LDS Baptism Place","LDS Baptism Date","LDS Baptism Source",
+    "LDS Confirmation Place","LDS Confirmation Date","LDS Confirmation Source",
+    "LDS Initiatory Place","LDS Initiatory Date","LDS Initiatory Source",
+    "LDS Endowment Place","LDS Endowment Date","LDS Endowment Source",
+    "LDS Sealing to Parents Place","LDS Sealing to Parents Date","LDS Sealing to Parents Source",
+    "LDS Sealing to Spouse Place","LDS Sealing to Spouse Date","LDS Sealing to Spouse Source",
+    "Complete","Date Completed"
+  ];
+
+  // Personal attribute fields (exclude *Source* and LDS and final completion flags)
+  const PERSONAL_FIELDS = [
+    "Name","Mother","Father","Spouse Name",
+    "Marriage Date","Marriage Place",
+    "Birth Date","Birth Place",
+    "Gender",
+    "Christening Date","Christening Place",
+    "Death Date","Death Place",
+    "Burial Date","Burial Place",
+    "Ancestry Link","FamilySearch Link"
+  ];
+
+  const GENDER_CLASS = (g) => g === 'Male' ? 'male' : g === 'Female' ? 'female' : 'unknown';
+
+  /*************** IndexedDB wrapper ***************/
+  const DB_NAME = 'genealogy-mvp';
+  const DB_VERSION = 1;
+  let db;
+  function openDB(){
+    return new Promise((resolve,reject)=>{
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = (e)=>{
+        const d = e.target.result;
+        if(!d.objectStoreNames.contains('persons')) d.createObjectStore('persons', {keyPath:'id'});
+        if(!d.objectStoreNames.contains('relationships')) d.createObjectStore('relationships', {keyPath:'id'});
+        if(!d.objectStoreNames.contains('sources')) d.createObjectStore('sources', {keyPath:'id'});
+        if(!d.objectStoreNames.contains('settings')) d.createObjectStore('settings', {keyPath:'key'});
+      };
+      req.onsuccess = ()=>{ db = req.result; resolve(db); };
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  function tx(store, mode='readonly'){ return db.transaction(store, mode).objectStore(store); }
+  async function getAll(store){ return new Promise((res,rej)=>{ const r = tx(store).getAll(); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+  async function put(store, val){ return new Promise((res,rej)=>{ const r=tx(store,'readwrite').put(val); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+  async function bulkPut(store, arr){
+    return new Promise((res,rej)=>{
+      const t = db.transaction(store,'readwrite'); const s=t.objectStore(store);
+      arr.forEach(v=>s.put(v)); t.oncomplete=()=>res(); t.onerror=()=>rej(t.error);
+    });
+  }
+  async function clearStore(store){ return new Promise((res,rej)=>{ const r=tx(store,'readwrite').clear(); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+
+  /*************** Model Helpers ***************/
+  function uid(prefix='p'){ return prefix + Math.random().toString(36).slice(2,9); }
+  function now(){ return Date.now(); }
+
+  function emptyPerson(){
+    const fieldStatus = Object.fromEntries(FIELD_ORDER.map(k=>[k,{completed:false, completedAt:null}]));
+    return {
+      id: uid('p_'), name:'', gender:'Unknown', links:{ancestry:'', familySearch:''},
+      parents:{motherId:null,fatherId:null}, spouseIds:[],
+      facts:{ birth:{date:'',place:''}, christening:{date:'',place:''}, marriage:{spouseName:'',date:'',place:''}, death:{date:'',place:''}, burial:{date:'',place:''}},
+      lds:{ baptism:{date:'',place:''}, confirmation:{date:'',place:''}, initiatory:{date:'',place:''}, endowment:{date:'',place:''}, sealingParents:{date:'',place:''}, sealingSpouse:{date:'',place:''} },
+      sourceIndex: {}, fieldStatus, priority:{weight:0, stuck:false}, createdAt:now(), updatedAt:now()
+    };
+  }
+
+  function computeFirstMissingIndex(p){
+    for(let i=0;i<FIELD_ORDER.length;i++){
+      if(!p.fieldStatus[FIELD_ORDER[i]]?.completed) return i;
+    }
+    return FIELD_ORDER.length-1; // if all completed
+  }
+  function priorityScore(p){
+    const base = computeFirstMissingIndex(p);
+    const stuckPen = p.priority.stuck ? 10000 : 0;
+    return base + p.priority.weight + stuckPen;
+  }
+  function progressPercent(p){
+    const total = FIELD_ORDER.length; let done=0; for(const k of FIELD_ORDER){ if(p.fieldStatus[k]?.completed) done++; }
+    return Math.round((done/total)*100);
+  }
+
+  function updateFieldStatus(p, key, isCompleted){
+    const fs = p.fieldStatus[key] || (p.fieldStatus[key] = {completed:false, completedAt:null});
+    fs.completed = !!isCompleted; fs.completedAt = isCompleted ? now() : null; p.updatedAt = now();
+  }
+  function sourcesCount(p, key){ return (p.sourceIndex[key]||[]).length; }
+
+  /*************** In-memory cache ***************/
+  const cache = { persons: new Map(), relationships: new Map(), sources: new Map() };
+  async function loadCache(){
+    const [persons, rels, srcs] = await Promise.all([getAll('persons'), getAll('relationships'), getAll('sources')]);
+    cache.persons = new Map(persons.map(p=>[p.id,p]));
+    cache.relationships = new Map(rels.map(r=>[r.id,r]));
+    cache.sources = new Map(srcs.map(s=>[s.id,s]));
+  }
+
+  /*************** Demo seed ***************/
+  async function ensureSeed(){
+    if(cache.persons.size>0) return;
+    const a = emptyPerson(); a.name = 'John Doe'; a.gender='Male'; a.facts.birth.date='1900-01-01'; updateFieldStatus(a,'Name',true); updateFieldStatus(a,'Birth Date',true);
+    const b = emptyPerson(); b.name = 'Jane Smith'; b.gender='Female'; b.facts.birth.date='1902-02-02'; updateFieldStatus(b,'Name',true); updateFieldStatus(b,'Birth Date',true);
+    const c = emptyPerson(); c.name = 'Mary Doe'; c.gender='Female'; c.parents.motherId=b.id; c.parents.fatherId=a.id; updateFieldStatus(c,'Name',true);
+    const r1 = {id:uid('r_'), type:'spouse', aId:a.id, bId:b.id};
+    const r2 = {id:uid('r_'), type:'parentChild', parentId:a.id, childId:c.id};
+    const r3 = {id:uid('r_'), type:'parentChild', parentId:b.id, childId:c.id};
+    await bulkPut('persons',[a,b,c]); await bulkPut('relationships',[r1,r2,r3]);
+    cache.persons.set(a.id,a); cache.persons.set(b.id,b); cache.persons.set(c.id,c);
+    cache.relationships.set(r1.id,r1); cache.relationships.set(r2.id,r2); cache.relationships.set(r3.id,r3);
+  }
+
+  /*************** Todo rendering ***************/
+  let selectedTodoIds = new Set();
+  function nextNeededField(p){ return FIELD_ORDER[computeFirstMissingIndex(p)]; }
+  function todoItems(){
+    const all = Array.from(cache.persons.values());
+    all.sort((x,y)=> priorityScore(y) - priorityScore(x));
+    return all.map(p=>({ person:p, field: nextNeededField(p), score: priorityScore(p) }));
+  }
+  function renderTodo(){
+    const active = todoItems().filter(x=>!x.person.priority.stuck);
+    const stuck = todoItems().filter(x=>x.person.priority.stuck);
+    document.getElementById('todoCount').textContent = active.length;
+    const make = (arr)=> arr.map(x=>{
+      const div=document.createElement('div'); div.className='todo-item'; div.dataset.id=x.person.id;
+      div.innerHTML = `<div>
+        <div><strong>${x.person.name || '(Unnamed)'}</strong></div>
+        <div class="pill">Next: ${x.field}</div>
+      </div>
+      <div class="controls">
+        <button class="btn btn-open">Open</button>
+        <button class="btn btn-select">Select</button>
+      </div>`;
+      return div;
+    });
+    const todoList = document.getElementById('todoList');
+    todoList.innerHTML=''; make(active).forEach(el=>todoList.appendChild(el));
+    const stuckList = document.getElementById('stuckList');
+    stuckList.innerHTML=''; make(stuck).forEach(el=>stuckList.appendChild(el));
+  }
+
+  /*************** Tree layout & rendering (simple layered) ***************/
+  const NODE_W = 220, NODE_H = 110, X_GAP = 60, Y_GAP = 140;
+  let view = { x: 0, y: 0, k: 1 };
+  let lastPositions = new Map();
+
+  function computeLevels(){
+    // BFS from roots (people with no parents)
+    const levels = new Map();
+    const indeg = new Map();
+    for (const p of cache.persons.values()){ indeg.set(p.id, 0); }
+    for (const r of cache.relationships.values()){
+      if(r.type==='parentChild') indeg.set(r.childId, (indeg.get(r.childId)||0)+1);
+    }
+    const q = [];
+    for (const [id,deg] of indeg) if(deg===0) { levels.set(id,0); q.push(id); }
+    while(q.length){
+      const id = q.shift(); const lvl = levels.get(id);
+      for (const r of cache.relationships.values()){
+        if(r.type==='parentChild' && r.parentId===id){
+          if(!levels.has(r.childId)){ levels.set(r.childId, lvl+1); q.push(r.childId); }
+        }
+      }
+    }
+    // default level 0 for any isolated
+    for (const id of cache.persons.keys()) if(!levels.has(id)) levels.set(id,0);
+    return levels;
+  }
+
+  function layoutNodes(){
+    const levels = computeLevels();
+    const byLevel = {};
+    for (const [id,l] of levels){ (byLevel[l] ||= []).push(id); }
+    const pos = new Map();
+    let y=20;
+    for (const l of Object.keys(byLevel).map(Number).sort((a,b)=>a-b)){
+      const arr = byLevel[l];
+      let x = 20;
+      for (const id of arr){ pos.set(id, {x, y}); x += NODE_W + X_GAP; }
+      y += NODE_H + Y_GAP;
+    }
+    return pos;
+  }
+
+  function yearFromDate(s){ if(!s) return ''; const y = (s.match(/\d{4}/)||[])[0]; return y||''; }
+
+  function renderTree(){
+    const svg = document.getElementById('treeCanvas');
+    const W = svg.clientWidth || svg.parentElement.clientWidth; const H = svg.clientHeight || 600; svg.setAttribute('viewBox',`${view.x} ${view.y} ${W/view.k} ${H/view.k}`);
+    while(svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const pos = layoutNodes(); lastPositions = pos;
+
+    // Draw parent-child links
+    for (const r of cache.relationships.values()){
+      if(r.type==='parentChild'){
+        const p1 = pos.get(r.parentId), p2 = pos.get(r.childId); if(!p1||!p2) continue;
+        const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+        line.setAttribute('x1', p1.x + NODE_W/2); line.setAttribute('y1', p1.y + NODE_H);
+        line.setAttribute('x2', p2.x + NODE_W/2); line.setAttribute('y2', p2.y);
+        line.setAttribute('stroke','#94a3b8'); svg.appendChild(line);
+      }
+    }
+    // Draw spouse links
+    for (const r of cache.relationships.values()){
+      if(r.type==='spouse'){
+        const a = pos.get(r.aId), b = pos.get(r.bId); if(!a||!b) continue;
+        const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+        line.setAttribute('x1', a.x + NODE_W); line.setAttribute('y1', a.y + NODE_H/2);
+        line.setAttribute('x2', b.x); line.setAttribute('y2', b.y + NODE_H/2);
+        line.setAttribute('stroke','#94a3b8'); svg.appendChild(line);
+      }
+    }
+
+    // Draw nodes
+    for (const p of cache.persons.values()){
+      const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.classList.add('node'); g.dataset.id=p.id; const {x,y}=pos.get(p.id);
+      const outer = document.createElementNS('http://www.w3.org/2000/svg','rect'); outer.setAttribute('x',x); outer.setAttribute('y',y); outer.setAttribute('rx',10); outer.setAttribute('ry',10); outer.setAttribute('width',NODE_W); outer.setAttribute('height',NODE_H); outer.setAttribute('fill','#fff'); outer.setAttribute('stroke','#9ca3af');
+      const lds = document.createElementNS('http://www.w3.org/2000/svg','rect'); lds.setAttribute('x',x); lds.setAttribute('y',y); lds.setAttribute('width',NODE_W); lds.setAttribute('height',NODE_H/3); lds.setAttribute('class','ldsBand');
+
+      // Personal section background
+      const personalBg = document.createElementNS('http://www.w3.org/2000/svg','rect'); personalBg.setAttribute('x',x); personalBg.setAttribute('y',y+NODE_H/3); personalBg.setAttribute('width',NODE_W); personalBg.setAttribute('height',NODE_H*2/3); personalBg.setAttribute('class', GENDER_CLASS(p.gender));
+
+      // Vertical segments for personal attributes
+      const segCount = PERSONAL_FIELDS.length;
+      const segW = NODE_W / segCount;
+      const segBaseY = y + NODE_H/3; const segH = NODE_H*2/3;
+      for(let i=0;i<segCount;i++){
+        const field = PERSONAL_FIELDS[i];
+        const hasVal = !!(p.fieldStatus[field]?.completed);
+        const srcs = sourcesCount(p, field);
+        const fillH = hasVal ? (srcs>0 ? segH : segH/2) : 0;
+        const seg = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        seg.setAttribute('x', x + i*segW + 0.5);
+        seg.setAttribute('y', segBaseY + (segH - fillH));
+        seg.setAttribute('width', Math.max(1, segW-1));
+        seg.setAttribute('height', fillH);
+        seg.setAttribute('fill', p.gender==='Male' ? '#60a5fa' : (p.gender==='Female' ? '#f472b6' : '#cbd5e1'));
+        seg.setAttribute('stroke','none');
+        svg.appendChild(seg);
+      }
+
+      const name = document.createElementNS('http://www.w3.org/2000/svg','text'); name.setAttribute('x', x+10); name.setAttribute('y', y+NODE_H/3 + 18); name.setAttribute('class','label'); name.textContent = p.name||'(Unnamed)';
+      const years = document.createElementNS('http://www.w3.org/2000/svg','text'); years.setAttribute('x', x+10); years.setAttribute('y', y+NODE_H/3 + 34); years.setAttribute('class','years'); years.textContent = `${yearFromDate(p.facts.birth.date)} – ${yearFromDate(p.facts.death.date)}`;
+
+      g.appendChild(outer); g.appendChild(lds); g.appendChild(personalBg); g.appendChild(name); g.appendChild(years);
+      g.addEventListener('click', ()=> openPersonModal(p.id));
+      svg.appendChild(g);
+    }
+  }
+
+  // Pan/zoom
+  function attachPanZoom(){
+    const svg = document.getElementById('treeCanvas');
+    let panning=false; let sx=0, sy=0; let vx=0, vy=0;
+    svg.addEventListener('mousedown', (e)=>{ panning=true; sx=e.clientX; sy=e.clientY; vx=view.x; vy=view.y; });
+    window.addEventListener('mouseup', ()=> panning=false);
+    window.addEventListener('mousemove', (e)=>{
+      if(!panning) return; const dx=(e.clientX-sx)/view.k; const dy=(e.clientY-sy)/view.k; view.x = vx - dx; view.y = vy - dy; renderTree();
+    });
+    svg.addEventListener('wheel', (e)=>{ e.preventDefault(); const scale = Math.exp(-e.deltaY/500); const mx = e.offsetX/ (svg.clientWidth); const my = e.offsetY/(svg.clientHeight);
+      const w = svg.clientWidth/view.k, h = svg.clientHeight/view.k; const wx = view.x + mx*w; const wy = view.y + my*h;
+      view.k *= scale; const w2 = svg.clientWidth/view.k, h2 = svg.clientHeight/view.k; view.x = wx - mx*w2; view.y = wy - my*h2; renderTree(); }, {passive:false});
+  }
+
+  function centerOnPerson(id){
+    const svg = document.getElementById('treeCanvas');
+    const W = svg.clientWidth || svg.parentElement.clientWidth; const H = svg.clientHeight || 600;
+    const p = lastPositions.get(id); if(!p) return;
+    const viewW = W / view.k; const viewH = H / view.k;
+    view.x = p.x + NODE_W/2 - viewW/2;
+    view.y = p.y + NODE_H/2 - viewH/2;
+    renderTree();
+  }
+
+  function focusByName(q){
+    q = q.trim().toLowerCase(); if(!q) return; const p = Array.from(cache.persons.values()).find(p=> (p.name||'').toLowerCase().includes(q));
+    if(!p) return; centerOnPerson(p.id);
+  }
+
+  /*************** Person Modal & Sources ***************/
+  const personModal = {
+    el: document.getElementById('personModal'),
+    grid: document.getElementById('pmGrid'),
+    progress: document.getElementById('pmProgress'),
+    open(id){ this.id=id; this.render(); this.el.classList.add('open'); },
+    close(){ this.el.classList.remove('open'); },
+    render(){
+      const p = cache.persons.get(this.id); if(!p) return;
+      document.getElementById('pmTitle').textContent = `Edit: ${p.name||'(Unnamed)'} (${p.id})`;
+      const rows = [];
+      const fieldInput = (label, valueKey, getter, setter, opts={}) => {
+        const row = document.createElement('div'); row.className='field'; if(opts.span2) row.style.gridColumn = '1 / span 2';
+        const lab = document.createElement('label'); lab.textContent = label; row.appendChild(lab);
+        let input;
+        if(opts.type==='select'){
+          input = document.createElement('select'); opts.choices.forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=v; if(getter()===v) o.selected=true; input.appendChild(o); });
+        } else {
+          input = document.createElement('input'); input.value = getter();
+        }
+        input.addEventListener('change',()=>{ setter(input.value); put('persons',p); renderAll(); }); row.appendChild(input);
+        const btn = document.createElement('button'); btn.textContent = `Sources [${(p.sourceIndex[label]||[]).length||0}]`;
+        btn.addEventListener('click',()=> openSourcesModal(p.id,label)); row.appendChild(btn);
+        rows.push(row);
+      };
+
+      this.grid.innerHTML='';
+      // Name spans two columns
+      fieldInput('Name','name', ()=>p.name, v=>{ p.name=v; updateFieldStatus(p,'Name', !!v) }, {span2:true});
+
+      // Parents & spouse name (denormalized entries for checklist only)
+      fieldInput('Mother','', ()=> findName(p.parents.motherId)||'', v=>{ updateFieldStatus(p,'Mother', !!v) });
+      fieldInput('Father','', ()=> findName(p.parents.fatherId)||'', v=>{ updateFieldStatus(p,'Father', !!v) });
+      fieldInput('Spouse Name','', ()=> p.facts.marriage.spouseName, v=>{ p.facts.marriage.spouseName=v; updateFieldStatus(p,'Spouse Name', !!v) });
+
+      // Marriage
+      fieldInput('Marriage Date','', ()=> p.facts.marriage.date, v=>{ p.facts.marriage.date=v; updateFieldStatus(p,'Marriage Date', !!v) });
+      fieldInput('Marriage Place','', ()=> p.facts.marriage.place, v=>{ p.facts.marriage.place=v; updateFieldStatus(p,'Marriage Place', !!v) });
+
+      // Birth
+      fieldInput('Birth Date','', ()=> p.facts.birth.date, v=>{ p.facts.birth.date=v; updateFieldStatus(p,'Birth Date', !!v) });
+      fieldInput('Birth Place','', ()=> p.facts.birth.place, v=>{ p.facts.birth.place=v; updateFieldStatus(p,'Birth Place', !!v) });
+
+      // Gender select
+      const genderSetter = (val)=>{ p.gender=val; updateFieldStatus(p,'Gender', val!=='Unknown'); };
+      fieldInput('Gender','', ()=> p.gender, v=>{ genderSetter(v); }, {type:'select', choices:['Unknown','Male','Female']});
+
+      // Christening
+      fieldInput('Christening Date','', ()=> p.facts.christening.date, v=>{ p.facts.christening.date=v; updateFieldStatus(p,'Christening Date', !!v) });
+      fieldInput('Christening Place','', ()=> p.facts.christening.place, v=>{ p.facts.christening.place=v; updateFieldStatus(p,'Christening Place', !!v) });
+
+      // Death & Burial
+      fieldInput('Death Date','', ()=> p.facts.death.date, v=>{ p.facts.death.date=v; updateFieldStatus(p,'Death Date', !!v) });
+      fieldInput('Death Place','', ()=> p.facts.death.place, v=>{ p.facts.death.place=v; updateFieldStatus(p,'Death Place', !!v) });
+      fieldInput('Burial Date','', ()=> p.facts.burial.date, v=>{ p.facts.burial.date=v; updateFieldStatus(p,'Burial Date', !!v) });
+      fieldInput('Burial Place','', ()=> p.facts.burial.place, v=>{ p.facts.burial.place=v; updateFieldStatus(p,'Burial Place', !!v) });
+
+      // Links
+      fieldInput('Ancestry Link','', ()=> p.links.ancestry, v=>{ p.links.ancestry=v; updateFieldStatus(p,'Ancestry Link', !!v) });
+      fieldInput('FamilySearch Link','', ()=> p.links.familySearch, v=>{ p.links.familySearch=v; updateFieldStatus(p,'FamilySearch Link', !!v) });
+
+      // LDS
+      const LDS = [
+        ['LDS Baptism Place', ( )=>p.lds.baptism.place, v=>{ p.lds.baptism.place=v; }],
+        ['LDS Baptism Date',  ()=>p.lds.baptism.date,  v=>{ p.lds.baptism.date=v; }],
+        ['LDS Confirmation Place', ()=>p.lds.confirmation.place, v=>{ p.lds.confirmation.place=v; }],
+        ['LDS Confirmation Date',  ()=>p.lds.confirmation.date,  v=>{ p.lds.confirmation.date=v; }],
+        ['LDS Initiatory Place', ()=>p.lds.initiatory.place, v=>{ p.lds.initiatory.place=v; }],
+        ['LDS Initiatory Date',  ()=>p.lds.initiatory.date,  v=>{ p.lds.initiatory.date=v; }],
+        ['LDS Endowment Place', ()=>p.lds.endowment.place, v=>{ p.lds.endowment.place=v; }],
+        ['LDS Endowment Date',  ()=>p.lds.endowment.date,  v=>{ p.lds.endowment.date=v; }],
+        ['LDS Sealing to Parents Place', ()=>p.lds.sealingParents.place, v=>{ p.lds.sealingParents.place=v; }],
+        ['LDS Sealing to Parents Date',  ()=>p.lds.sealingParents.date,  v=>{ p.lds.sealingParents.date=v; }],
+        ['LDS Sealing to Spouse Place',  ()=>p.lds.sealingSpouse.place, v=>{ p.lds.sealingSpouse.place=v; }],
+        ['LDS Sealing to Spouse Date',   ()=>p.lds.sealingSpouse.date,   v=>{ p.lds.sealingSpouse.date=v; }],
+      ];
+      for(const [label,get,set] of LDS){ fieldInput(label,'', get, v=>{ set(v); updateFieldStatus(p,label, !!v); }); }
+
+      // Append
+      rows.forEach(r=>this.grid.appendChild(r));
+      // Progress
+      const pct = progressPercent(p); this.progress.style.width = pct + '%';
+    }
+  };
+
+  function openPersonModal(id){ personModal.open(id); }
+  document.getElementById('pmClose').addEventListener('click',()=> personModal.close());
+
+  // Sources modal state
+  let sourcesCtx = { personId:null, field:null };
+  function openSourcesModal(personId, field){ sourcesCtx={personId, field}; renderSources(); document.getElementById('sourcesModal').classList.add('open'); }
+  document.getElementById('smClose').addEventListener('click',()=> document.getElementById('sourcesModal').classList.remove('open'));
+  document.getElementById('srcAdd').addEventListener('click', async ()=>{
+    const p = cache.persons.get(sourcesCtx.personId); if(!p) return;
+    const title = document.getElementById('srcTitle').value.trim();
+    const url = document.getElementById('srcUrl').value.trim();
+    const citation = document.getElementById('srcCitation').value.trim();
+    if(!title && !url && !citation) return;
+    const sid = uid('s_');
+    const src = {id:sid, title, url, citation, notes:'', createdAt:now(), updatedAt:now()};
+    p.sourceIndex[sourcesCtx.field] ||= []; p.sourceIndex[sourcesCtx.field].push(sid);
+    cache.sources.set(sid, src); await put('sources', src); await put('persons', p); renderSources(); renderAll();
+    document.getElementById('srcTitle').value=''; document.getElementById('srcUrl').value=''; document.getElementById('srcCitation').value='';
+  });
+  function renderSources(){
+    const list = document.getElementById('sourcesList'); const title = document.getElementById('smTitle');
+    const p = cache.persons.get(sourcesCtx.personId); if(!p){ list.innerHTML=''; return; }
+    title.textContent = `Sources — ${p.name||'(Unnamed)'} — ${sourcesCtx.field}`;
+    const ids = p.sourceIndex[sourcesCtx.field]||[]; list.innerHTML='';
+    ids.forEach(id=>{
+      const s = cache.sources.get(id); const row = document.createElement('div'); row.className='field';
+      const lab = document.createElement('label'); lab.textContent = s.title || '(untitled)'; row.appendChild(lab);
+      const cit = document.createElement('input'); cit.value = s.citation||''; cit.addEventListener('change',()=>{ s.citation=cit.value; s.updatedAt=now(); put('sources',s); }); row.appendChild(cit);
+      const url = document.createElement('input'); url.value = s.url||''; url.addEventListener('change',()=>{ s.url=url.value; s.updatedAt=now(); put('sources',s); }); row.appendChild(url);
+      const del = document.createElement('button'); del.textContent='Remove'; del.addEventListener('click', async ()=>{
+        p.sourceIndex[sourcesCtx.field] = (p.sourceIndex[sourcesCtx.field]||[]).filter(x=>x!==id); await put('persons',p); cache.sources.delete(id); renderSources(); renderAll();
+      }); row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  function findName(id){ if(!id) return null; const p = cache.persons.get(id); return p?.name||null; }
+
+  /*************** Kanban ***************/
+  function renderKanban(){
+    const scroller = document.getElementById('kanbanScroller'); scroller.innerHTML='';
+    const lanes = FIELD_ORDER; // include all fields
+    const byLane = new Map(lanes.map(f=>[f, []]));
+    for (const p of cache.persons.values()){
+      const f = nextNeededField(p); if(byLane.has(f)) byLane.get(f).push(p);
+    }
+    for (const f of lanes){
+      const col = document.createElement('div'); col.className='lane';
+      const h = document.createElement('div'); h.style.fontWeight='700'; h.style.marginBottom='6px'; h.textContent = f; col.appendChild(h);
+      for (const p of byLane.get(f)){
+        const card = document.createElement('div'); card.className='card-mini';
+        const a = document.createElement('a'); a.href="#"; a.textContent = `${p.name||'(Unnamed)'} • ${progressPercent(p)}%`;
+        a.addEventListener('click', (e)=>{ e.preventDefault(); centerOnPerson(p.id); });
+        card.appendChild(a); col.appendChild(card);
+      }
+      scroller.appendChild(col);
+    }
+  }
+
+  /*************** Progress Track ***************/
+  function renderMetrics(){
+    const total = cache.persons.size; let complete=0, notBegun=0;
+    for(const p of cache.persons.values()){
+      const pct = progressPercent(p); if(pct===0) notBegun++; if(pct===100) complete++;
+    }
+    document.getElementById('mTotal').textContent = total;
+    document.getElementById('mComplete').textContent = complete;
+    document.getElementById('mNotBegun').textContent = notBegun;
+    document.getElementById('mInProgress').textContent = Math.max(0, total - complete - notBegun);
+  }
+
+  /*************** Import/Export ***************/
+  document.getElementById('btnImport').addEventListener('click', ()=> document.getElementById('filePicker').click());
+  document.getElementById('filePicker').addEventListener('change', async (e)=>{
+    const file = e.target.files[0]; if(!file) return; const text = await file.text();
+    if(file.name.toLowerCase().endsWith('.json')){
+      const data = JSON.parse(text); await importInternalJson(data);
+    } else {
+      await importGedcom(text);
+    }
+    renderAll();
+    e.target.value='';
+  });
+
+  async function importInternalJson(data){
+    await clearStore('persons'); await clearStore('relationships'); await clearStore('sources');
+    await bulkPut('persons', data.persons||[]); await bulkPut('relationships', data.relationships||[]); await bulkPut('sources', data.sources||[]);
+    await loadCache();
+  }
+
+  async function importGedcom(text){
+    // Minimal GEDCOM 5.5 subset parser (INDI/FAM with BIRT/DEAT/MARR/SEX/NAME)
+    const lines = text.split(/\r?\n/);
+    let ptr=null, type=null; const indis = new Map(); const fams = new Map();
+    for(const raw of lines){
+      const m = raw.match(/^(\d+)\s+(@[^@]+@)?\s*(\w+)?\s*(.*)$/); if(!m) continue;
+      const lvl=+m[1], xptr=m[2], tag=m[3], rest=m[4]||'';
+      if(lvl===0){ if(xptr && tag){ ptr=xptr; type=tag; if(tag==='INDI') indis.set(ptr,{id:ptr,name:'',sex:'Unknown',birth:{},death:{}, famc:[], fams:[]}); if(tag==='FAM') fams.set(ptr,{id:ptr,husb:null,wife:null,chil:[],marr:{}}); continue; } else { ptr=null; type=null; continue; } }
+      if(type==='INDI' && ptr){ const i = indis.get(ptr);
+        if(tag==='NAME'){ i.name = rest.replace(/[\|]/g,' ').trim(); }
+        if(tag==='SEX'){ i.sex = rest==='M'?'Male':(rest==='F'?'Female':'Unknown'); }
+        if(tag==='BIRT' || tag==='DEAT' || tag==='CHR' || tag==='BAPM'){ i._last = tag; }
+        if((tag==='DATE' || tag==='PLAC') && i._last){ const tgt = i._last==='BIRT'? i.birth : (i._last==='DEAT'? i.death : {}); if(tag==='DATE') tgt.date=rest; if(tag==='PLAC') tgt.place=rest; if(i._last==='BIRT') i.birth=tgt; if(i._last==='DEAT') i.death=tgt; }
+        if(tag==='FAMC'){ i.famc=(i.famc||[]).concat([rest.trim()]); }
+        if(tag==='FAMS'){ i.fams=(i.fams||[]).concat([rest.trim()]); }
+      }
+      if(type==='FAM' && ptr){ const f = fams.get(ptr);
+        if(tag==='HUSB') f.husb=rest.trim();
+        if(tag==='WIFE') f.wife=rest.trim();
+        if(tag==='CHIL') f.chil.push(rest.trim());
+        if(tag==='MARR'){ f._last='MARR'; }
+        if((tag==='DATE'||tag==='PLAC') && f._last==='MARR'){ if(tag==='DATE') f.marr.date=rest; if(tag==='PLAC') f.marr.place=rest; }
+      }
+    }
+    // Map to internal model
+    await clearStore('persons'); await clearStore('relationships');
+    const idmap = new Map();
+    const persons=[]; const rels=[];
+    for(const [k,i] of indis){
+      const p = emptyPerson(); idmap.set(k,p.id);
+      p.name = i.name; p.gender = i.sex; if(i.birth) { p.facts.birth.date = i.birth.date||''; p.facts.birth.place = i.birth.place||''; }
+      if(i.death) { p.facts.death.date = i.death.date||''; p.facts.death.place = i.death.place||''; }
+      updateFieldStatus(p,'Name', !!p.name); updateFieldStatus(p,'Birth Date', !!p.facts.birth.date); updateFieldStatus(p,'Death Date', !!p.facts.death.date);
+      persons.push(p);
+    }
+    for(const [k,f] of fams){
+      const hid = idmap.get(f.husb); const wid = idmap.get(f.wife);
+      if(hid && wid){ rels.push({id:uid('r_'), type:'spouse', aId:hid, bId:wid}); }
+      for(const ch of f.chil){ const cid = idmap.get(ch); if(cid && hid){ rels.push({id:uid('r_'), type:'parentChild', parentId:hid, childId:cid}); }
+        if(cid && wid){ rels.push({id:uid('r_'), type:'parentChild', parentId:wid, childId:cid}); }
+      }
+    }
+    await bulkPut('persons', persons); await bulkPut('relationships', rels); await loadCache();
+  }
+
+  document.getElementById('btnExportJson').addEventListener('click', async ()=>{
+    const data = { persons: Array.from(cache.persons.values()), relationships: Array.from(cache.relationships.values()), sources: Array.from(cache.sources.values()) };
+    download('genealogy.json', JSON.stringify(data, null, 2));
+  });
+
+  document.getElementById('btnExportGedcom').addEventListener('click', async ()=>{
+    const txt = toGedcom(); download('genealogy.ged', txt);
+  });
+
+  function toGedcom(){
+    const lines = [];
+    lines.push('0 HEAD');
+    for(const p of cache.persons.values()){
+      const rid = '@' + p.id + '@';
+      lines.push(`0 ${rid} INDI`);
+      lines.push(`1 NAME ${p.name}`);
+      lines.push(`1 SEX ${p.gender==='Male'?'M':p.gender==='Female'?'F':'U'}`);
+      if(p.facts.birth.date || p.facts.birth.place){ lines.push('1 BIRT'); if(p.facts.birth.date) lines.push(`2 DATE ${p.facts.birth.date}`); if(p.facts.birth.place) lines.push(`2 PLAC ${p.facts.birth.place}`); }
+      if(p.facts.death.date || p.facts.death.place){ lines.push('1 DEAT'); if(p.facts.death.date) lines.push(`2 DATE ${p.facts.death.date}`); if(p.facts.death.place) lines.push(`2 PLAC ${p.facts.death.place}`); }
+    }
+    // Spouse and parent-child (simplified)
+    const famIds = new Map();
+    for(const r of cache.relationships.values()){
+      if(r.type==='spouse'){
+        const famId = uid('fam_'); famIds.set(`${r.aId}|${r.bId}`, famId);
+        lines.push(`0 @${famId}@ FAM`);
+        lines.push(`1 HUSB @${r.aId}@`);
+        lines.push(`1 WIFE @${r.bId}@`);
+      }
+    }
+    for(const r of cache.relationships.values()){
+      if(r.type==='parentChild'){
+        let famId = null;
+        for(const [key,id] of famIds){ const [a,b]=key.split('|'); if(a===r.parentId || b===r.parentId){ famId=id; break; } }
+        if(!famId){ famId = uid('fam_'); lines.push(`0 @${famId}@ FAM`); lines.push(`1 HUSB @${r.parentId}@`); }
+        lines.push(`1 CHIL @${r.childId}@`);
+      }
+    }
+    lines.push('0 TRLR');
+    return lines.join('\n');
+  }
+
+  function download(filename, text){
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type:'text/plain'})); a.download = filename; a.click(); setTimeout(()=> URL.revokeObjectURL(a.href), 5000);
+  }
+
+  /*************** UI events ***************/
+    document.getElementById('tabActive').addEventListener('click',()=>{ 
+    document.getElementById('tabActive').classList.add('active'); 
+    document.getElementById('tabStuck').classList.remove('active'); 
+    document.getElementById('todoList').classList.remove('hidden'); 
+    document.getElementById('stuckList').classList.add('hidden'); 
+  });
+  document.getElementById('tabStuck').addEventListener('click',()=>{ 
+    document.getElementById('tabStuck').classList.add('active'); 
+    document.getElementById('tabActive').classList.remove('active'); 
+    document.getElementById('stuckList').classList.remove('hidden'); 
+    document.getElementById('todoList').classList.add('hidden'); 
+  });
+
+  document.getElementById('btnAdd').addEventListener('click', async ()=>{ 
+    const p = emptyPerson(); 
+    p.name = prompt('New person name?')||''; 
+    updateFieldStatus(p,'Name',!!p.name); 
+    await put('persons',p); 
+    cache.persons.set(p.id,p); 
+    renderAll(); 
+    openPersonModal(p.id); 
+  });
+
+  document.getElementById('btnElevate').addEventListener('click', async ()=> 
+    modifySelected((p)=>{ p.priority.weight = Math.max(0, p.priority.weight-1); })
+  );
+  document.getElementById('btnDeprioritize').addEventListener('click', async ()=> 
+    modifySelected((p)=>{ p.priority.weight += 1; })
+  );
+  document.getElementById('btnMarkStuck').addEventListener('click', async ()=> 
+    modifySelected((p)=>{ p.priority.stuck = true; })
+  );
+  document.getElementById('btnUnstuck').addEventListener('click', async ()=> 
+    modifySelected((p)=>{ p.priority.stuck = false; })
+  );
+
+  function modifySelected(mut){
+    const ids = Array.from(selectedTodoIds.values()); 
+    ids.forEach(id=>{ 
+      const p = cache.persons.get(id); 
+      if(p){ mut(p); put('persons',p); }
+    }); 
+    renderAll(); 
+  }
+
+  document.getElementById('todoList').addEventListener('click',(e)=>{
+    const item = e.target.closest('.todo-item'); 
+    if(!item) return; 
+    const id = item.dataset.id;
+    if(e.target.classList.contains('btn-open')){ openPersonModal(id); }
+    if(e.target.classList.contains('btn-select')){ 
+      if(selectedTodoIds.has(id)){ 
+        selectedTodoIds.delete(id); 
+        item.style.outline=''; 
+      } else { 
+        selectedTodoIds.add(id); 
+        item.style.outline='2px solid var(--accent)'; 
+      } 
+    }
+  });
+
+  document.getElementById('search').addEventListener('keydown',(e)=>{ 
+    if(e.key==='Enter') focusByName(e.target.value); 
+  });
+
+  /*************** Render orchestration ***************/
+  function renderAll(){ 
+    renderTodo(); 
+    renderTree(); 
+    renderKanban(); 
+    renderMetrics(); 
+  }
+
+  (async function main(){
+    await openDB(); 
+    await loadCache(); 
+    await ensureSeed(); 
+    attachPanZoom(); 
+    renderAll();
+  })();
+  </script>
+</body>
+</html>
