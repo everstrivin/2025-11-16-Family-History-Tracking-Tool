@@ -537,6 +537,8 @@
       // Personal section background
       const personalBg = document.createElementNS('http://www.w3.org/2000/svg','rect'); personalBg.setAttribute('x',x); personalBg.setAttribute('y',y+NODE_H/3); personalBg.setAttribute('width',NODE_W); personalBg.setAttribute('height',NODE_H*2/3); personalBg.setAttribute('class', GENDER_CLASS(p.gender));
 
+      g.appendChild(outer); g.appendChild(lds); g.appendChild(personalBg);
+      
       // Vertical segments for personal attributes
       const segCount = PERSONAL_FIELDS.length;
       const segW = NODE_W / segCount;
@@ -553,13 +555,13 @@
         seg.setAttribute('height', fillH);
         seg.setAttribute('fill', p.gender==='Male' ? '#60a5fa' : (p.gender==='Female' ? '#f472b6' : '#cbd5e1'));
         seg.setAttribute('stroke','none');
-        svg.appendChild(seg);
+        g.appendChild(seg);
       }
 
       const name = document.createElementNS('http://www.w3.org/2000/svg','text'); name.setAttribute('x', x+10); name.setAttribute('y', y+NODE_H/3 + 18); name.setAttribute('class','label'); name.textContent = p.name||'(Unnamed)';
       const years = document.createElementNS('http://www.w3.org/2000/svg','text'); years.setAttribute('x', x+10); years.setAttribute('y', y+NODE_H/3 + 34); years.setAttribute('class','years'); years.textContent = `${yearFromDate(p.facts.birth.date)} – ${yearFromDate(p.facts.death.date)}`;
 
-      g.appendChild(outer); g.appendChild(lds); g.appendChild(personalBg); g.appendChild(name); g.appendChild(years);
+      g.appendChild(name); g.appendChild(years);
       
       // Add expand/collapse buttons
       const btnY = y + NODE_H - 22;
