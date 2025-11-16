@@ -132,6 +132,7 @@
         <h3 id="pmTitle" style="margin:0;">Edit Person</h3>
         <div style="display:flex; gap:6px; align-items:center;">
           <div class="progress" style="width:200px"><div id="pmProgress"></div></div>
+          <button id="pmRemove" style="background:#dc2626; color:white;">Remove Person</button>
           <button id="pmClose">Close</button>
         </div>
       </div>
@@ -217,6 +218,8 @@
     });
   }
   async function clearStore(store){ return new Promise((res,rej)=>{ const r=tx(store,'readwrite').clear(); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+  async function deletePerson(id){ return new Promise((res,rej)=>{ const r=tx('persons','readwrite').delete(id); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+  async function deleteRelationship(id){ return new Promise((res,rej)=>{ const r=tx('relationships','readwrite').delete(id); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
 
   /*************** Model Helpers ***************/
   function uid(prefix='p'){ return prefix + Math.random().toString(36).slice(2,9); }
@@ -534,6 +537,39 @@
 
   function openPersonModal(id){ personModal.open(id); }
   document.getElementById('pmClose').addEventListener('click',()=> personModal.close());
+  document.getElementById('pmRemove').addEventListener('click', async ()=>{
+    const id = personModal.id;
+    const p = cache.persons.get(id);
+    if(!p) return;
+    const confirmed = confirm(`Are you sure you want to remove ${p.name || '(Unnamed)'} from the tree? This action cannot be undone.`);
+    if(!confirmed) return;
+    
+    // Remove all relationships involving this person
+    const relsToDelete = Array.from(cache.relationships.values()).filter(r => 
+      (r.type === 'spouse' && (r.aId === id || r.bId === id)) ||
+      (r.type === 'parentChild' && (r.parentId === id || r.childId === id))
+    );
+    for(const r of relsToDelete){
+      await deleteRelationship(r.id);
+      cache.relationships.delete(r.id);
+    }
+    
+    // Update parent references in other persons
+    for(const person of cache.persons.values()){
+      if(person.parents.motherId === id) person.parents.motherId = null;
+      if(person.parents.fatherId === id) person.parents.fatherId = null;
+      if(person.parents.motherId === null && person.parents.fatherId === null) continue;
+      await put('persons', person);
+    }
+    
+    // Remove person from database and cache
+    await deletePerson(id);
+    cache.persons.delete(id);
+    
+    // Close modal and refresh UI
+    personModal.close();
+    renderAll();
+  });
 
   // Sources modal state
   let sourcesCtx = { personId:null, field:null };
