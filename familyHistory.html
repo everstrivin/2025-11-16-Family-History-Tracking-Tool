@@ -100,6 +100,9 @@
     <section id="treePanel" class="panel">
       <div class="header" id="treeHeader">
         <h2 style="margin-right:8px;">Tree</h2>
+        <select id="basePersonSelect" style="flex:1; padding:6px 8px; border:1px solid var(--border); border-radius:8px;">
+          <option value="">Select Base Person...</option>
+        </select>
         <input id="search" placeholder="Find individual by name… (Enter)" />
         <button id="btnAdd">Add Person</button>
         <button id="btnImport">Import (GEDCOM/JSON)</button>
@@ -315,27 +318,263 @@
   const NODE_W = 220, NODE_H = 110, X_GAP = 60, Y_GAP = 140;
   let view = { x: 0, y: 0, k: 1 };
   let lastPositions = new Map();
-
-  function computeLevels(){
-    // BFS from roots (people with no parents)
-    const levels = new Map();
-    const indeg = new Map();
-    for (const p of cache.persons.values()){ indeg.set(p.id, 0); }
-    for (const r of cache.relationships.values()){
-      if(r.type==='parentChild') indeg.set(r.childId, (indeg.get(r.childId)||0)+1);
+  
+  // Track which nodes have their parents/children expanded
+  let expandedNodes = {
+    parents: new Set(),
+    children: new Set()
+  };
+  
+  // Track the base person
+  let basePersonId = null;
+  
+  // Initialize with first generation expanded
+  function initializeDefaultExpansion() {
+    // Try to find "John Robert Higgin" as default base person
+    let basePerson = Array.from(cache.persons.values())
+      .find(p => p.name && p.name.toLowerCase().includes('john') && p.name.toLowerCase().includes('higgin'));
+    
+    if (!basePerson) {
+      // Fall back to first person with no parents
+      const rootIds = Array.from(cache.persons.values())
+        .filter(p => !p.parents.motherId && !p.parents.fatherId)
+        .map(p => p.id);
+      if (rootIds.length > 0) {
+        basePerson = cache.persons.get(rootIds[0]);
+      }
     }
-    const q = [];
-    for (const [id,deg] of indeg) if(deg===0) { levels.set(id,0); q.push(id); }
-    while(q.length){
-      const id = q.shift(); const lvl = levels.get(id);
-      for (const r of cache.relationships.values()){
-        if(r.type==='parentChild' && r.parentId===id){
-          if(!levels.has(r.childId)){ levels.set(r.childId, lvl+1); q.push(r.childId); }
+    
+    if (!basePerson && cache.persons.size > 0) {
+      // Just use first person if nothing else works
+      basePerson = Array.from(cache.persons.values())[0];
+    }
+    
+    if (basePerson) {
+      basePersonId = basePerson.id;
+      // Expand parents by default to show immediate family
+      if (basePerson.parents.motherId || basePerson.parents.fatherId) {
+        expandedNodes.parents.add(basePerson.id);
+      }
+    }
+  }
+  
+  function updateBasePersonSelect() {
+    const select = document.getElementById('basePersonSelect');
+    select.innerHTML = '<option value="">Select Base Person...</option>';
+    
+    const sortedPersons = Array.from(cache.persons.values())
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    
+    for (const p of sortedPersons) {
+      const option = document.createElement('option');
+      option.value = p.id;
+      option.textContent = p.name || '(Unnamed)';
+      if (p.id === basePersonId) {
+        option.selected = true;
+      }
+      select.appendChild(option);
+    }
+  }
+  
+  function setBasePerson(personId) {
+    if (!personId) return;
+    basePersonId = personId;
+    // Reset expansion state
+    expandedNodes.parents.clear();
+    expandedNodes.children.clear();
+    // Expand parents by default if they exist to show immediate family
+    const person = cache.persons.get(personId);
+    if (person && (person.parents.motherId || person.parents.fatherId)) {
+      expandedNodes.parents.add(personId);
+    }
+    updateBasePersonSelect();
+    renderAll();
+    centerOnPerson(personId);
+  }
+  
+  function getVisiblePersonIds() {
+    const visible = new Set();
+    const queue = [];
+    
+    // If we have a base person, start from them
+    if (basePersonId && cache.persons.has(basePersonId)) {
+      visible.add(basePersonId);
+      queue.push(basePersonId);
+      
+      const basePerson = cache.persons.get(basePersonId);
+      
+      // Always show base person's spouse(s)
+      for (const r of cache.relationships.values()) {
+        if (r.type === 'spouse') {
+          if (r.aId === basePersonId && !visible.has(r.bId)) {
+            visible.add(r.bId);
+            queue.push(r.bId);
+          } else if (r.bId === basePersonId && !visible.has(r.aId)) {
+            visible.add(r.aId);
+            queue.push(r.aId);
+          }
+        }
+      }
+      
+      // Show base person's parents and siblings ONLY if parents are expanded
+      if (expandedNodes.parents.has(basePersonId)) {
+        // Show parents
+        if (basePerson.parents.motherId) {
+          visible.add(basePerson.parents.motherId);
+          queue.push(basePerson.parents.motherId);
+        }
+        if (basePerson.parents.fatherId) {
+          visible.add(basePerson.parents.fatherId);
+          queue.push(basePerson.parents.fatherId);
+        }
+        
+        // Show siblings (people who share same parents)
+        if (basePerson.parents.motherId || basePerson.parents.fatherId) {
+          for (const p of cache.persons.values()) {
+            if (p.id === basePersonId) continue;
+            const sharesMother = basePerson.parents.motherId && p.parents.motherId === basePerson.parents.motherId;
+            const sharesFather = basePerson.parents.fatherId && p.parents.fatherId === basePerson.parents.fatherId;
+            if (sharesMother || sharesFather) {
+              visible.add(p.id);
+              queue.push(p.id);
+            }
+          }
+        }
+      }
+    } else {
+      // Fallback: show root nodes if no base person
+      for (const p of cache.persons.values()) {
+        if (!p.parents.motherId && !p.parents.fatherId) {
+          visible.add(p.id);
+          queue.push(p.id);
         }
       }
     }
-    // default level 0 for any isolated
-    for (const id of cache.persons.keys()) if(!levels.has(id)) levels.set(id,0);
+    
+    // BFS to expand based on user interactions
+    while (queue.length > 0) {
+      const id = queue.shift();
+      
+      // Always add spouses of visible people
+      for (const r of cache.relationships.values()) {
+        if (r.type === 'spouse') {
+          if (r.aId === id && !visible.has(r.bId)) {
+            visible.add(r.bId);
+            queue.push(r.bId);
+          } else if (r.bId === id && !visible.has(r.aId)) {
+            visible.add(r.aId);
+            queue.push(r.aId);
+          }
+        }
+      }
+      
+      // If this node has children expanded, add them
+      if (expandedNodes.children.has(id)) {
+        for (const r of cache.relationships.values()) {
+          if (r.type === 'parentChild' && r.parentId === id) {
+            if (!visible.has(r.childId)) {
+              visible.add(r.childId);
+              queue.push(r.childId);
+            }
+          }
+        }
+      }
+      
+      // If this node has parents expanded, add them
+      if (expandedNodes.parents.has(id)) {
+        const person = cache.persons.get(id);
+        if (person) {
+          if (person.parents.motherId && !visible.has(person.parents.motherId)) {
+            visible.add(person.parents.motherId);
+            queue.push(person.parents.motherId);
+          }
+          if (person.parents.fatherId && !visible.has(person.parents.fatherId)) {
+            visible.add(person.parents.fatherId);
+            queue.push(person.parents.fatherId);
+          }
+        }
+      }
+    }
+    
+    return visible;
+  }
+  
+  function toggleParents(personId) {
+    if (expandedNodes.parents.has(personId)) {
+      expandedNodes.parents.delete(personId);
+    } else {
+      expandedNodes.parents.add(personId);
+    }
+    renderTree();
+  }
+  
+  function toggleChildren(personId) {
+    if (expandedNodes.children.has(personId)) {
+      expandedNodes.children.delete(personId);
+    } else {
+      expandedNodes.children.add(personId);
+    }
+    renderTree();
+  }
+  
+  function hasParents(personId) {
+    const person = cache.persons.get(personId);
+    return person && (person.parents.motherId || person.parents.fatherId);
+  }
+  
+  function hasChildren(personId) {
+    for (const r of cache.relationships.values()) {
+      if (r.type === 'parentChild' && r.parentId === personId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function computeLevels(){
+    // Get only visible persons
+    const visibleIds = getVisiblePersonIds();
+    
+    // BFS from roots (people with no parents) among visible nodes
+    const levels = new Map();
+    const indeg = new Map();
+    
+    for (const id of visibleIds) { 
+      indeg.set(id, 0); 
+    }
+    
+    for (const r of cache.relationships.values()){
+      if(r.type==='parentChild' && visibleIds.has(r.childId) && visibleIds.has(r.parentId)) {
+        indeg.set(r.childId, (indeg.get(r.childId)||0)+1);
+      }
+    }
+    
+    const q = [];
+    for (const [id,deg] of indeg) {
+      if(deg===0) { 
+        levels.set(id,0); 
+        q.push(id); 
+      }
+    }
+    
+    while(q.length){
+      const id = q.shift(); 
+      const lvl = levels.get(id);
+      for (const r of cache.relationships.values()){
+        if(r.type==='parentChild' && r.parentId===id && visibleIds.has(r.childId)){
+          if(!levels.has(r.childId)){ 
+            levels.set(r.childId, lvl+1); 
+            q.push(r.childId); 
+          }
+        }
+      }
+    }
+    
+    // default level 0 for any isolated visible nodes
+    for (const id of visibleIds) {
+      if(!levels.has(id)) levels.set(id,0);
+    }
+    
     return levels;
   }
 
@@ -362,10 +601,12 @@
     while(svg.firstChild) svg.removeChild(svg.firstChild);
 
     const pos = layoutNodes(); lastPositions = pos;
+    const visibleIds = getVisiblePersonIds();
 
-    // Draw parent-child links
+    // Draw parent-child links (only for visible nodes)
     for (const r of cache.relationships.values()){
       if(r.type==='parentChild'){
+        if(!visibleIds.has(r.parentId) || !visibleIds.has(r.childId)) continue;
         const p1 = pos.get(r.parentId), p2 = pos.get(r.childId); if(!p1||!p2) continue;
         const line = document.createElementNS('http://www.w3.org/2000/svg','line');
         line.setAttribute('x1', p1.x + NODE_W/2); line.setAttribute('y1', p1.y + NODE_H);
@@ -373,9 +614,10 @@
         line.setAttribute('stroke','#94a3b8'); svg.appendChild(line);
       }
     }
-    // Draw spouse links
+    // Draw spouse links (only for visible nodes)
     for (const r of cache.relationships.values()){
       if(r.type==='spouse'){
+        if(!visibleIds.has(r.aId) || !visibleIds.has(r.bId)) continue;
         const a = pos.get(r.aId), b = pos.get(r.bId); if(!a||!b) continue;
         const line = document.createElementNS('http://www.w3.org/2000/svg','line');
         line.setAttribute('x1', a.x + NODE_W); line.setAttribute('y1', a.y + NODE_H/2);
@@ -384,15 +626,23 @@
       }
     }
 
-    // Draw nodes
+    // Draw nodes (only visible ones)
     for (const p of cache.persons.values()){
-      const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.classList.add('node'); g.dataset.id=p.id; const {x,y}=pos.get(p.id);
+      if(!visibleIds.has(p.id)) continue;
+      
+      const posData = pos.get(p.id);
+      if(!posData) continue;
+      const {x,y} = posData;
+      
+      const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.classList.add('node'); g.dataset.id=p.id;
       const outer = document.createElementNS('http://www.w3.org/2000/svg','rect'); outer.setAttribute('x',x); outer.setAttribute('y',y); outer.setAttribute('rx',10); outer.setAttribute('ry',10); outer.setAttribute('width',NODE_W); outer.setAttribute('height',NODE_H); outer.setAttribute('fill','#fff'); outer.setAttribute('stroke','#9ca3af');
       const lds = document.createElementNS('http://www.w3.org/2000/svg','rect'); lds.setAttribute('x',x); lds.setAttribute('y',y); lds.setAttribute('width',NODE_W); lds.setAttribute('height',NODE_H/3); lds.setAttribute('class','ldsBand');
 
       // Personal section background
       const personalBg = document.createElementNS('http://www.w3.org/2000/svg','rect'); personalBg.setAttribute('x',x); personalBg.setAttribute('y',y+NODE_H/3); personalBg.setAttribute('width',NODE_W); personalBg.setAttribute('height',NODE_H*2/3); personalBg.setAttribute('class', GENDER_CLASS(p.gender));
 
+      g.appendChild(outer); g.appendChild(lds); g.appendChild(personalBg);
+      
       // Vertical segments for personal attributes
       const segCount = PERSONAL_FIELDS.length;
       const segW = NODE_W / segCount;
@@ -409,13 +659,70 @@
         seg.setAttribute('height', fillH);
         seg.setAttribute('fill', p.gender==='Male' ? '#60a5fa' : (p.gender==='Female' ? '#f472b6' : '#cbd5e1'));
         seg.setAttribute('stroke','none');
-        svg.appendChild(seg);
+        g.appendChild(seg);
       }
 
       const name = document.createElementNS('http://www.w3.org/2000/svg','text'); name.setAttribute('x', x+10); name.setAttribute('y', y+NODE_H/3 + 18); name.setAttribute('class','label'); name.textContent = p.name||'(Unnamed)';
       const years = document.createElementNS('http://www.w3.org/2000/svg','text'); years.setAttribute('x', x+10); years.setAttribute('y', y+NODE_H/3 + 34); years.setAttribute('class','years'); years.textContent = `${yearFromDate(p.facts.birth.date)} – ${yearFromDate(p.facts.death.date)}`;
 
-      g.appendChild(outer); g.appendChild(lds); g.appendChild(personalBg); g.appendChild(name); g.appendChild(years);
+      g.appendChild(name); g.appendChild(years);
+      
+      // Add expand/collapse buttons
+      const btnY = y + NODE_H - 22;
+      const btnSize = 18;
+      
+      // Parents button (top-left)
+      if(hasParents(p.id)) {
+        const parentsBtnGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+        parentsBtnGroup.style.cursor = 'pointer';
+        const parentsBtn = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        parentsBtn.setAttribute('x', x + 4);
+        parentsBtn.setAttribute('y', y + 4);
+        parentsBtn.setAttribute('width', btnSize);
+        parentsBtn.setAttribute('height', btnSize);
+        parentsBtn.setAttribute('rx', 4);
+        parentsBtn.setAttribute('fill', expandedNodes.parents.has(p.id) ? '#2563eb' : '#e5e7eb');
+        parentsBtn.setAttribute('stroke', '#9ca3af');
+        
+        const parentsIcon = document.createElementNS('http://www.w3.org/2000/svg','text');
+        parentsIcon.setAttribute('x', x + 7);
+        parentsIcon.setAttribute('y', y + 16);
+        parentsIcon.setAttribute('font-size', '12');
+        parentsIcon.setAttribute('fill', expandedNodes.parents.has(p.id) ? '#fff' : '#000');
+        parentsIcon.textContent = '↑';
+        
+        parentsBtnGroup.appendChild(parentsBtn);
+        parentsBtnGroup.appendChild(parentsIcon);
+        parentsBtnGroup.addEventListener('click', (e) => { e.stopPropagation(); toggleParents(p.id); });
+        g.appendChild(parentsBtnGroup);
+      }
+      
+      // Children button (bottom-left)
+      if(hasChildren(p.id)) {
+        const childrenBtnGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+        childrenBtnGroup.style.cursor = 'pointer';
+        const childrenBtn = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        childrenBtn.setAttribute('x', x + 4);
+        childrenBtn.setAttribute('y', btnY);
+        childrenBtn.setAttribute('width', btnSize);
+        childrenBtn.setAttribute('height', btnSize);
+        childrenBtn.setAttribute('rx', 4);
+        childrenBtn.setAttribute('fill', expandedNodes.children.has(p.id) ? '#2563eb' : '#e5e7eb');
+        childrenBtn.setAttribute('stroke', '#9ca3af');
+        
+        const childrenIcon = document.createElementNS('http://www.w3.org/2000/svg','text');
+        childrenIcon.setAttribute('x', x + 7);
+        childrenIcon.setAttribute('y', btnY + 13);
+        childrenIcon.setAttribute('font-size', '12');
+        childrenIcon.setAttribute('fill', expandedNodes.children.has(p.id) ? '#fff' : '#000');
+        childrenIcon.textContent = '↓';
+        
+        childrenBtnGroup.appendChild(childrenBtn);
+        childrenBtnGroup.appendChild(childrenIcon);
+        childrenBtnGroup.addEventListener('click', (e) => { e.stopPropagation(); toggleChildren(p.id); });
+        g.appendChild(childrenBtnGroup);
+      }
+      
       g.addEventListener('click', ()=> openPersonModal(p.id));
       svg.appendChild(g);
     }
@@ -450,6 +757,20 @@
     if(!p) return; centerOnPerson(p.id);
   }
 
+  /*************** Relationship Management ***************/
+  async function updateParentChildRelationship(parentId, childId) {
+    // Check if relationship already exists
+    const existing = Array.from(cache.relationships.values())
+      .find(r => r.type === 'parentChild' && r.parentId === parentId && r.childId === childId);
+    
+    if (!existing) {
+      // Create new relationship
+      const rel = {id: uid('r_'), type: 'parentChild', parentId, childId};
+      await put('relationships', rel);
+      cache.relationships.set(rel.id, rel);
+    }
+  }
+
   /*************** Person Modal & Sources ***************/
   const personModal = {
     el: document.getElementById('personModal'),
@@ -467,10 +788,53 @@
         let input;
         if(opts.type==='select'){
           input = document.createElement('select'); opts.choices.forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=v; if(getter()===v) o.selected=true; input.appendChild(o); });
+        } else if(opts.type==='autocomplete'){
+          // Create autocomplete with datalist
+          const datalistId = 'datalist_' + label.replace(/\s+/g, '_');
+          input = document.createElement('input'); 
+          input.value = getter();
+          input.setAttribute('list', datalistId);
+          input.setAttribute('autocomplete', 'off');
+          
+          const datalist = document.createElement('datalist');
+          datalist.id = datalistId;
+          
+          // Populate with all persons
+          const persons = Array.from(cache.persons.values())
+            .filter(person => person.id !== p.id) // Don't include self
+            .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+          
+          persons.forEach(person => {
+            const option = document.createElement('option');
+            option.value = person.name || '(Unnamed)';
+            option.dataset.personId = person.id;
+            datalist.appendChild(option);
+          });
+          
+          row.appendChild(input);
+          row.appendChild(datalist);
         } else {
           input = document.createElement('input'); input.value = getter();
         }
-        input.addEventListener('change',()=>{ setter(input.value); put('persons',p); renderAll(); }); row.appendChild(input);
+        
+        if(opts.type !== 'autocomplete') {
+          row.appendChild(input);
+        }
+        
+        input.addEventListener('change',()=>{ 
+          if(opts.type === 'autocomplete' && opts.onSelect) {
+            // Find person by name
+            const selectedPerson = Array.from(cache.persons.values())
+              .find(person => person.name === input.value);
+            if(selectedPerson) {
+              opts.onSelect(selectedPerson.id);
+            }
+          }
+          setter(input.value); 
+          put('persons',p); 
+          renderAll(); 
+        }); 
+        
         const btn = document.createElement('button'); btn.textContent = `Sources [${(p.sourceIndex[label]||[]).length||0}]`;
         btn.addEventListener('click',()=> openSourcesModal(p.id,label)); row.appendChild(btn);
         rows.push(row);
@@ -480,9 +844,23 @@
       // Name spans two columns
       fieldInput('Name','name', ()=>p.name, v=>{ p.name=v; updateFieldStatus(p,'Name', !!v) }, {span2:true});
 
-      // Parents & spouse name (denormalized entries for checklist only)
-      fieldInput('Mother','', ()=> findName(p.parents.motherId)||'', v=>{ updateFieldStatus(p,'Mother', !!v) });
-      fieldInput('Father','', ()=> findName(p.parents.fatherId)||'', v=>{ updateFieldStatus(p,'Father', !!v) });
+      // Parents & spouse name with autocomplete
+      fieldInput('Mother','', ()=> findName(p.parents.motherId)||'', v=>{ updateFieldStatus(p,'Mother', !!v) }, {
+        type: 'autocomplete',
+        onSelect: (personId) => { 
+          p.parents.motherId = personId; 
+          // Create or update relationship
+          updateParentChildRelationship(personId, p.id);
+        }
+      });
+      fieldInput('Father','', ()=> findName(p.parents.fatherId)||'', v=>{ updateFieldStatus(p,'Father', !!v) }, {
+        type: 'autocomplete',
+        onSelect: (personId) => { 
+          p.parents.fatherId = personId;
+          // Create or update relationship
+          updateParentChildRelationship(personId, p.id);
+        }
+      });
       fieldInput('Spouse Name','', ()=> p.facts.marriage.spouseName, v=>{ p.facts.marriage.spouseName=v; updateFieldStatus(p,'Spouse Name', !!v) });
 
       // Marriage
@@ -815,8 +1193,16 @@
     if(e.key==='Enter') focusByName(e.target.value); 
   });
 
+  document.getElementById('basePersonSelect').addEventListener('change', (e) => {
+    const personId = e.target.value;
+    if (personId) {
+      setBasePerson(personId);
+    }
+  });
+
   /*************** Render orchestration ***************/
   function renderAll(){ 
+    updateBasePersonSelect();
     renderTodo(); 
     renderTree(); 
     renderKanban(); 
@@ -826,7 +1212,8 @@
   (async function main(){
     await openDB(); 
     await loadCache(); 
-    await ensureSeed(); 
+    await ensureSeed();
+    initializeDefaultExpansion();
     attachPanZoom(); 
     renderAll();
   })();
