@@ -315,27 +315,162 @@
   const NODE_W = 220, NODE_H = 110, X_GAP = 60, Y_GAP = 140;
   let view = { x: 0, y: 0, k: 1 };
   let lastPositions = new Map();
-
-  function computeLevels(){
-    // BFS from roots (people with no parents)
-    const levels = new Map();
-    const indeg = new Map();
-    for (const p of cache.persons.values()){ indeg.set(p.id, 0); }
-    for (const r of cache.relationships.values()){
-      if(r.type==='parentChild') indeg.set(r.childId, (indeg.get(r.childId)||0)+1);
+  
+  // Track which nodes have their parents/children expanded
+  let expandedNodes = {
+    parents: new Set(),
+    children: new Set()
+  };
+  
+  // Initialize with first generation expanded
+  function initializeDefaultExpansion() {
+    // Find root nodes (people with no parents)
+    const rootIds = Array.from(cache.persons.values())
+      .filter(p => !p.parents.motherId && !p.parents.fatherId)
+      .map(p => p.id);
+    
+    // Expand children of only the first root node by default
+    if (rootIds.length > 0) {
+      expandedNodes.children.add(rootIds[0]);
     }
-    const q = [];
-    for (const [id,deg] of indeg) if(deg===0) { levels.set(id,0); q.push(id); }
-    while(q.length){
-      const id = q.shift(); const lvl = levels.get(id);
-      for (const r of cache.relationships.values()){
-        if(r.type==='parentChild' && r.parentId===id){
-          if(!levels.has(r.childId)){ levels.set(r.childId, lvl+1); q.push(r.childId); }
+  }
+  
+  function getVisiblePersonIds() {
+    const visible = new Set();
+    const queue = [];
+    
+    // Start with root nodes (people with no parents)
+    for (const p of cache.persons.values()) {
+      if (!p.parents.motherId && !p.parents.fatherId) {
+        visible.add(p.id);
+        queue.push(p.id);
+      }
+    }
+    
+    // BFS to find all visible descendants and spouses
+    while (queue.length > 0) {
+      const id = queue.shift();
+      
+      // Always add spouses of visible people
+      for (const r of cache.relationships.values()) {
+        if (r.type === 'spouse') {
+          if (r.aId === id && !visible.has(r.bId)) {
+            visible.add(r.bId);
+            queue.push(r.bId);
+          } else if (r.bId === id && !visible.has(r.aId)) {
+            visible.add(r.aId);
+            queue.push(r.aId);
+          }
+        }
+      }
+      
+      // If this node has children expanded, add them
+      if (expandedNodes.children.has(id)) {
+        for (const r of cache.relationships.values()) {
+          if (r.type === 'parentChild' && r.parentId === id) {
+            if (!visible.has(r.childId)) {
+              visible.add(r.childId);
+              queue.push(r.childId);
+            }
+          }
+        }
+      }
+      
+      // If this node has parents expanded, add them
+      if (expandedNodes.parents.has(id)) {
+        const person = cache.persons.get(id);
+        if (person) {
+          if (person.parents.motherId && !visible.has(person.parents.motherId)) {
+            visible.add(person.parents.motherId);
+            queue.push(person.parents.motherId);
+          }
+          if (person.parents.fatherId && !visible.has(person.parents.fatherId)) {
+            visible.add(person.parents.fatherId);
+            queue.push(person.parents.fatherId);
+          }
         }
       }
     }
-    // default level 0 for any isolated
-    for (const id of cache.persons.keys()) if(!levels.has(id)) levels.set(id,0);
+    
+    return visible;
+  }
+  
+  function toggleParents(personId) {
+    if (expandedNodes.parents.has(personId)) {
+      expandedNodes.parents.delete(personId);
+    } else {
+      expandedNodes.parents.add(personId);
+    }
+    renderTree();
+  }
+  
+  function toggleChildren(personId) {
+    if (expandedNodes.children.has(personId)) {
+      expandedNodes.children.delete(personId);
+    } else {
+      expandedNodes.children.add(personId);
+    }
+    renderTree();
+  }
+  
+  function hasParents(personId) {
+    const person = cache.persons.get(personId);
+    return person && (person.parents.motherId || person.parents.fatherId);
+  }
+  
+  function hasChildren(personId) {
+    for (const r of cache.relationships.values()) {
+      if (r.type === 'parentChild' && r.parentId === personId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function computeLevels(){
+    // Get only visible persons
+    const visibleIds = getVisiblePersonIds();
+    
+    // BFS from roots (people with no parents) among visible nodes
+    const levels = new Map();
+    const indeg = new Map();
+    
+    for (const id of visibleIds) { 
+      indeg.set(id, 0); 
+    }
+    
+    for (const r of cache.relationships.values()){
+      if(r.type==='parentChild' && visibleIds.has(r.childId) && visibleIds.has(r.parentId)) {
+        indeg.set(r.childId, (indeg.get(r.childId)||0)+1);
+      }
+    }
+    
+    const q = [];
+    for (const [id,deg] of indeg) {
+      if(deg===0) { 
+        levels.set(id,0); 
+        q.push(id); 
+      }
+    }
+    
+    while(q.length){
+      const id = q.shift(); 
+      const lvl = levels.get(id);
+      for (const r of cache.relationships.values()){
+        if(r.type==='parentChild' && r.parentId===id && visibleIds.has(r.childId)){
+          if(!levels.has(r.childId)){ 
+            levels.set(r.childId, lvl+1); 
+            q.push(r.childId); 
+          }
+        }
+      }
+    }
+    
+    // default level 0 for any isolated visible nodes
+    for (const id of visibleIds) {
+      if(!levels.has(id)) levels.set(id,0);
+    }
+    
     return levels;
   }
 
@@ -362,10 +497,12 @@
     while(svg.firstChild) svg.removeChild(svg.firstChild);
 
     const pos = layoutNodes(); lastPositions = pos;
+    const visibleIds = getVisiblePersonIds();
 
-    // Draw parent-child links
+    // Draw parent-child links (only for visible nodes)
     for (const r of cache.relationships.values()){
       if(r.type==='parentChild'){
+        if(!visibleIds.has(r.parentId) || !visibleIds.has(r.childId)) continue;
         const p1 = pos.get(r.parentId), p2 = pos.get(r.childId); if(!p1||!p2) continue;
         const line = document.createElementNS('http://www.w3.org/2000/svg','line');
         line.setAttribute('x1', p1.x + NODE_W/2); line.setAttribute('y1', p1.y + NODE_H);
@@ -373,9 +510,10 @@
         line.setAttribute('stroke','#94a3b8'); svg.appendChild(line);
       }
     }
-    // Draw spouse links
+    // Draw spouse links (only for visible nodes)
     for (const r of cache.relationships.values()){
       if(r.type==='spouse'){
+        if(!visibleIds.has(r.aId) || !visibleIds.has(r.bId)) continue;
         const a = pos.get(r.aId), b = pos.get(r.bId); if(!a||!b) continue;
         const line = document.createElementNS('http://www.w3.org/2000/svg','line');
         line.setAttribute('x1', a.x + NODE_W); line.setAttribute('y1', a.y + NODE_H/2);
@@ -384,9 +522,15 @@
       }
     }
 
-    // Draw nodes
+    // Draw nodes (only visible ones)
     for (const p of cache.persons.values()){
-      const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.classList.add('node'); g.dataset.id=p.id; const {x,y}=pos.get(p.id);
+      if(!visibleIds.has(p.id)) continue;
+      
+      const posData = pos.get(p.id);
+      if(!posData) continue;
+      const {x,y} = posData;
+      
+      const g = document.createElementNS('http://www.w3.org/2000/svg','g'); g.classList.add('node'); g.dataset.id=p.id;
       const outer = document.createElementNS('http://www.w3.org/2000/svg','rect'); outer.setAttribute('x',x); outer.setAttribute('y',y); outer.setAttribute('rx',10); outer.setAttribute('ry',10); outer.setAttribute('width',NODE_W); outer.setAttribute('height',NODE_H); outer.setAttribute('fill','#fff'); outer.setAttribute('stroke','#9ca3af');
       const lds = document.createElementNS('http://www.w3.org/2000/svg','rect'); lds.setAttribute('x',x); lds.setAttribute('y',y); lds.setAttribute('width',NODE_W); lds.setAttribute('height',NODE_H/3); lds.setAttribute('class','ldsBand');
 
@@ -416,6 +560,63 @@
       const years = document.createElementNS('http://www.w3.org/2000/svg','text'); years.setAttribute('x', x+10); years.setAttribute('y', y+NODE_H/3 + 34); years.setAttribute('class','years'); years.textContent = `${yearFromDate(p.facts.birth.date)} – ${yearFromDate(p.facts.death.date)}`;
 
       g.appendChild(outer); g.appendChild(lds); g.appendChild(personalBg); g.appendChild(name); g.appendChild(years);
+      
+      // Add expand/collapse buttons
+      const btnY = y + NODE_H - 22;
+      const btnSize = 18;
+      
+      // Parents button (top-left)
+      if(hasParents(p.id)) {
+        const parentsBtnGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+        parentsBtnGroup.style.cursor = 'pointer';
+        const parentsBtn = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        parentsBtn.setAttribute('x', x + 4);
+        parentsBtn.setAttribute('y', y + 4);
+        parentsBtn.setAttribute('width', btnSize);
+        parentsBtn.setAttribute('height', btnSize);
+        parentsBtn.setAttribute('rx', 4);
+        parentsBtn.setAttribute('fill', expandedNodes.parents.has(p.id) ? '#2563eb' : '#e5e7eb');
+        parentsBtn.setAttribute('stroke', '#9ca3af');
+        
+        const parentsIcon = document.createElementNS('http://www.w3.org/2000/svg','text');
+        parentsIcon.setAttribute('x', x + 7);
+        parentsIcon.setAttribute('y', y + 16);
+        parentsIcon.setAttribute('font-size', '12');
+        parentsIcon.setAttribute('fill', expandedNodes.parents.has(p.id) ? '#fff' : '#000');
+        parentsIcon.textContent = '↑';
+        
+        parentsBtnGroup.appendChild(parentsBtn);
+        parentsBtnGroup.appendChild(parentsIcon);
+        parentsBtnGroup.addEventListener('click', (e) => { e.stopPropagation(); toggleParents(p.id); });
+        g.appendChild(parentsBtnGroup);
+      }
+      
+      // Children button (bottom-left)
+      if(hasChildren(p.id)) {
+        const childrenBtnGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+        childrenBtnGroup.style.cursor = 'pointer';
+        const childrenBtn = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        childrenBtn.setAttribute('x', x + 4);
+        childrenBtn.setAttribute('y', btnY);
+        childrenBtn.setAttribute('width', btnSize);
+        childrenBtn.setAttribute('height', btnSize);
+        childrenBtn.setAttribute('rx', 4);
+        childrenBtn.setAttribute('fill', expandedNodes.children.has(p.id) ? '#2563eb' : '#e5e7eb');
+        childrenBtn.setAttribute('stroke', '#9ca3af');
+        
+        const childrenIcon = document.createElementNS('http://www.w3.org/2000/svg','text');
+        childrenIcon.setAttribute('x', x + 7);
+        childrenIcon.setAttribute('y', btnY + 13);
+        childrenIcon.setAttribute('font-size', '12');
+        childrenIcon.setAttribute('fill', expandedNodes.children.has(p.id) ? '#fff' : '#000');
+        childrenIcon.textContent = '↓';
+        
+        childrenBtnGroup.appendChild(childrenBtn);
+        childrenBtnGroup.appendChild(childrenIcon);
+        childrenBtnGroup.addEventListener('click', (e) => { e.stopPropagation(); toggleChildren(p.id); });
+        g.appendChild(childrenBtnGroup);
+      }
+      
       g.addEventListener('click', ()=> openPersonModal(p.id));
       svg.appendChild(g);
     }
@@ -826,7 +1027,8 @@
   (async function main(){
     await openDB(); 
     await loadCache(); 
-    await ensureSeed(); 
+    await ensureSeed();
+    initializeDefaultExpansion();
     attachPanZoom(); 
     renderAll();
   })();
