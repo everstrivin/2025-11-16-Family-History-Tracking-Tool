@@ -749,6 +749,20 @@
     if(!p) return; centerOnPerson(p.id);
   }
 
+  /*************** Relationship Management ***************/
+  async function updateParentChildRelationship(parentId, childId) {
+    // Check if relationship already exists
+    const existing = Array.from(cache.relationships.values())
+      .find(r => r.type === 'parentChild' && r.parentId === parentId && r.childId === childId);
+    
+    if (!existing) {
+      // Create new relationship
+      const rel = {id: uid('r_'), type: 'parentChild', parentId, childId};
+      await put('relationships', rel);
+      cache.relationships.set(rel.id, rel);
+    }
+  }
+
   /*************** Person Modal & Sources ***************/
   const personModal = {
     el: document.getElementById('personModal'),
@@ -766,10 +780,53 @@
         let input;
         if(opts.type==='select'){
           input = document.createElement('select'); opts.choices.forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=v; if(getter()===v) o.selected=true; input.appendChild(o); });
+        } else if(opts.type==='autocomplete'){
+          // Create autocomplete with datalist
+          const datalistId = 'datalist_' + label.replace(/\s+/g, '_');
+          input = document.createElement('input'); 
+          input.value = getter();
+          input.setAttribute('list', datalistId);
+          input.setAttribute('autocomplete', 'off');
+          
+          const datalist = document.createElement('datalist');
+          datalist.id = datalistId;
+          
+          // Populate with all persons
+          const persons = Array.from(cache.persons.values())
+            .filter(person => person.id !== p.id) // Don't include self
+            .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+          
+          persons.forEach(person => {
+            const option = document.createElement('option');
+            option.value = person.name || '(Unnamed)';
+            option.dataset.personId = person.id;
+            datalist.appendChild(option);
+          });
+          
+          row.appendChild(input);
+          row.appendChild(datalist);
         } else {
           input = document.createElement('input'); input.value = getter();
         }
-        input.addEventListener('change',()=>{ setter(input.value); put('persons',p); renderAll(); }); row.appendChild(input);
+        
+        if(opts.type !== 'autocomplete') {
+          row.appendChild(input);
+        }
+        
+        input.addEventListener('change',()=>{ 
+          if(opts.type === 'autocomplete' && opts.onSelect) {
+            // Find person by name
+            const selectedPerson = Array.from(cache.persons.values())
+              .find(person => person.name === input.value);
+            if(selectedPerson) {
+              opts.onSelect(selectedPerson.id);
+            }
+          }
+          setter(input.value); 
+          put('persons',p); 
+          renderAll(); 
+        }); 
+        
         const btn = document.createElement('button'); btn.textContent = `Sources [${(p.sourceIndex[label]||[]).length||0}]`;
         btn.addEventListener('click',()=> openSourcesModal(p.id,label)); row.appendChild(btn);
         rows.push(row);
@@ -779,9 +836,23 @@
       // Name spans two columns
       fieldInput('Name','name', ()=>p.name, v=>{ p.name=v; updateFieldStatus(p,'Name', !!v) }, {span2:true});
 
-      // Parents & spouse name (denormalized entries for checklist only)
-      fieldInput('Mother','', ()=> findName(p.parents.motherId)||'', v=>{ updateFieldStatus(p,'Mother', !!v) });
-      fieldInput('Father','', ()=> findName(p.parents.fatherId)||'', v=>{ updateFieldStatus(p,'Father', !!v) });
+      // Parents & spouse name with autocomplete
+      fieldInput('Mother','', ()=> findName(p.parents.motherId)||'', v=>{ updateFieldStatus(p,'Mother', !!v) }, {
+        type: 'autocomplete',
+        onSelect: (personId) => { 
+          p.parents.motherId = personId; 
+          // Create or update relationship
+          updateParentChildRelationship(personId, p.id);
+        }
+      });
+      fieldInput('Father','', ()=> findName(p.parents.fatherId)||'', v=>{ updateFieldStatus(p,'Father', !!v) }, {
+        type: 'autocomplete',
+        onSelect: (personId) => { 
+          p.parents.fatherId = personId;
+          // Create or update relationship
+          updateParentChildRelationship(personId, p.id);
+        }
+      });
       fieldInput('Spouse Name','', ()=> p.facts.marriage.spouseName, v=>{ p.facts.marriage.spouseName=v; updateFieldStatus(p,'Spouse Name', !!v) });
 
       // Marriage
