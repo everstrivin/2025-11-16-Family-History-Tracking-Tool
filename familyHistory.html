@@ -351,8 +351,10 @@
     
     if (basePerson) {
       basePersonId = basePerson.id;
-      // Expand parents of base person to show them
-      expandedNodes.parents.add(basePerson.id);
+      // Expand parents by default to show immediate family
+      if (basePerson.parents.motherId || basePerson.parents.fatherId) {
+        expandedNodes.parents.add(basePerson.id);
+      }
     }
   }
   
@@ -380,8 +382,11 @@
     // Reset expansion state
     expandedNodes.parents.clear();
     expandedNodes.children.clear();
-    // Expand parents to show them
-    expandedNodes.parents.add(personId);
+    // Expand parents by default if they exist to show immediate family
+    const person = cache.persons.get(personId);
+    if (person && (person.parents.motherId || person.parents.fatherId)) {
+      expandedNodes.parents.add(personId);
+    }
     updateBasePersonSelect();
     renderAll();
     centerOnPerson(personId);
@@ -411,25 +416,28 @@
         }
       }
       
-      // Always show base person's parents
-      if (basePerson.parents.motherId) {
-        visible.add(basePerson.parents.motherId);
-        queue.push(basePerson.parents.motherId);
-      }
-      if (basePerson.parents.fatherId) {
-        visible.add(basePerson.parents.fatherId);
-        queue.push(basePerson.parents.fatherId);
-      }
-      
-      // Always show siblings (people who share same parents)
-      if (basePerson.parents.motherId || basePerson.parents.fatherId) {
-        for (const p of cache.persons.values()) {
-          if (p.id === basePersonId) continue;
-          const sharesMother = basePerson.parents.motherId && p.parents.motherId === basePerson.parents.motherId;
-          const sharesFather = basePerson.parents.fatherId && p.parents.fatherId === basePerson.parents.fatherId;
-          if (sharesMother || sharesFather) {
-            visible.add(p.id);
-            queue.push(p.id);
+      // Show base person's parents and siblings ONLY if parents are expanded
+      if (expandedNodes.parents.has(basePersonId)) {
+        // Show parents
+        if (basePerson.parents.motherId) {
+          visible.add(basePerson.parents.motherId);
+          queue.push(basePerson.parents.motherId);
+        }
+        if (basePerson.parents.fatherId) {
+          visible.add(basePerson.parents.fatherId);
+          queue.push(basePerson.parents.fatherId);
+        }
+        
+        // Show siblings (people who share same parents)
+        if (basePerson.parents.motherId || basePerson.parents.fatherId) {
+          for (const p of cache.persons.values()) {
+            if (p.id === basePersonId) continue;
+            const sharesMother = basePerson.parents.motherId && p.parents.motherId === basePerson.parents.motherId;
+            const sharesFather = basePerson.parents.fatherId && p.parents.fatherId === basePerson.parents.fatherId;
+            if (sharesMother || sharesFather) {
+              visible.add(p.id);
+              queue.push(p.id);
+            }
           }
         }
       }
